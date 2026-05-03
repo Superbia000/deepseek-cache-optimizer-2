@@ -1,9 +1,11 @@
 {
     "display_name": "DeepSeek Cache Optimizer Pro",
     "loading_order": 10,
-    "description": "具備狀態錨點追蹤與強制尾部重組技術，完美適應各種世界書、深度與預設，確保 DeepSeek V4 Pro 前綴快取命中率達 99%。",
-    "version": "2.0.0",
-    "author": "AI Architect",
+    "requires": [],
+    "optional": [],
     "js": "index.js",
-    "css": "style.css"
+    "css": "style.css",
+    "author": "AI Architect",
+    "version": "2.0.0",
+    "description": "具備狀態錨點追蹤與強制尾部重組技術，完美適應各種世界書、深度與預設，確保 DeepSeek V4 Pro 前綴快取命中率達 99%。"
 }
