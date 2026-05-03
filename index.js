@@ -1,24 +1,11 @@
+console.log("==================================================");
+console.log("[DS-Cache-Opt] 🚀 [1/7] 外掛腳本已成功被 SillyTavern 讀取並開始執行！");
+console.log("==================================================");
+
 const EXTENSION_NAME = "deepseek-cache-optimizer";
-
-// 取得 ST 全域上下文 (避免使用脆弱的 import)
-const STContext = SillyTavern.getContext();
-
-const defaultSettings = {
-    enabled: true,
-    chunkSize: 10
-};
-
-// 確保設定物件存在
-if (!STContext.extension_settings[EXTENSION_NAME]) {
-    STContext.extension_settings[EXTENSION_NAME] = {};
-}
-
-const settings = Object.assign({}, defaultSettings, STContext.extension_settings[EXTENSION_NAME]);
-
-function saveSettings() {
-    STContext.extension_settings[EXTENSION_NAME] = settings;
-    STContext.saveSettingsDebounced();
-}
+const defaultSettings = { enabled: true, chunkSize: 10 };
+let settings = { ...defaultSettings };
+let ST_extension_settings = {}; // 全域設定參考
 
 // 核心快取狀態錨點
 let cacheState = {
@@ -26,173 +13,210 @@ let cacheState = {
     anchorContent: null
 };
 
-/**
- * 核心：重新組裝發送給 API 的訊息陣列
- */
-function optimizeMessages(messages) {
-    if (!settings.enabled || messages.length < 3) return messages;
+// ==========================================
+// 1. 安全初始化模組 (防崩潰機制)
+// ==========================================
+async function init() {
+    console.log("[DS-Cache-Opt] ⏳ [2/7] 嘗試載入 SillyTavern 核心設定...");
+    try {
+        // 使用動態 Import，就算路徑錯了也不會導致整個腳本白屏崩潰
+        const stModule = await import('../../../../script.js');
+        ST_extension_settings = stModule.extension_settings;
+        console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 import 取得 ST 設定！");
+    } catch (err) {
+        console.warn("[DS-Cache-Opt] ⚠️ [3/7] Import 失敗，嘗試使用 window 全域變數...", err);
+        if (window.extension_settings) {
+            ST_extension_settings = window.extension_settings;
+            console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 window 取得 ST 設定！");
+        } else {
+            console.error("[DS-Cache-Opt] ❌ [3/7] 無法取得任何設定，外掛可能無法儲存狀態。");
+        }
+    }
 
-    // 偵測是否切換聊天室
-    const currentChatId = STContext.chatId || 'default';
-    if (cacheState.chatId !== currentChatId) {
-        cacheState.chatId = currentChatId;
-        cacheState.anchorContent = null;
-        console.log("[DS-Cache-Opt] 偵測到對話切換，重置靜態錨點");
+    // 初始化設定值
+    if (!ST_extension_settings[EXTENSION_NAME]) {
+        ST_extension_settings[EXTENSION_NAME] = {};
+    }
+    settings = Object.assign({}, defaultSettings, ST_extension_settings[EXTENSION_NAME]);
+    console.log("[DS-Cache-Opt] ⚙️ [4/7] 當前設定檔讀取完畢:", settings);
+
+    // 啟動 UI 與網路攔截
+    injectUI();
+    setupFetchHijack();
+}
+
+// ==========================================
+// 2. 暴力 UI 注入 (輪詢直到成功)
+// ==========================================
+function injectUI() {
+    console.log("[DS-Cache-Opt] ⏳ [5/7] 準備注入 UI 介面...");
+    const uiHTML = `
+    <div id="ds_cache_ui_box" style="padding:15px; background:rgba(20,20,20,0.8); border:2px solid #00ff88; border-radius:8px; margin-bottom:10px;">
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header" style="color:#00ff88;">
+                <b>🟢 DeepSeek 快取引擎 V4 (運行中)</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content" style="padding-top:10px;">
+                <label class="checkbox_label">
+                    <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
+                    <span>啟用 DeepSeek 底層劫持快取引擎</span>
+                </label>
+                <hr style="border-color:rgba(255,255,255,0.1); margin:10px 0;">
+                <div>
+                    <label>超前丟棄訊息數 (Chunk Size):</label>
+                    <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
+                    <br><small style="color:#a8a8a8;">當 ST 刪除舊訊息時，超前丟棄 N 條以保證前綴靜止。</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    `;
+
+    // 檢查 ST 的擴充設定面板是否已經出現
+    if ($('#extensions_settings').length > 0) {
+        if ($('#ds_cache_ui_box').length === 0) {
+            $('#extensions_settings').append(uiHTML);
+            console.log("[DS-Cache-Opt] 🖥️ [6/7] UI 介面注入成功！請檢查 ST 的 Extensions 面板。");
+            
+            // 綁定事件
+            $('#ds_cache_enable').on('change', function() {
+                settings.enabled = !!$(this).prop('checked');
+                ST_extension_settings[EXTENSION_NAME] = settings;
+                console.log("[DS-Cache-Opt] 🔘 狀態切換: 啟用 =", settings.enabled);
+            });
+            $('#ds_chunk_size').on('input', function() {
+                settings.chunkSize = parseInt($(this).val()) || 10;
+                ST_extension_settings[EXTENSION_NAME] = settings;
+                console.log("[DS-Cache-Opt] 🔘 ChunkSize 更改為:", settings.chunkSize);
+            });
+        }
+    } else {
+        console.warn("[DS-Cache-Opt] ⚠️ [5/7] 找不到 #extensions_settings 面板，1秒後重試...");
+        setTimeout(injectUI, 1000); // 輪詢直到成功
+    }
+}
+
+// ==========================================
+// 3. 核心重組邏輯
+// ==========================================
+function optimizeMessages(messages) {
+    console.log(`\n--- [DS-Cache-Opt] 🧠 開始進行陣列重組 ---`);
+    console.log(`[DS-Cache-Opt] 原始陣列長度: ${messages.length}`);
+
+    if (!settings.enabled) {
+        console.log("[DS-Cache-Opt] ⛔ 外掛已停用，不處理。");
+        return messages;
+    }
+    if (messages.length < 3) {
+        console.log("[DS-Cache-Opt] ⏭️ 陣列太短，跳過處理。");
+        return messages;
     }
 
     let staticTop = [];
     let history = [];
     let volatile = [];
-    let latestUser = messages[messages.length - 1]; // 抽出最新一句話
+    let latestUser = messages[messages.length - 1];
 
-    // 將所有訊息進行分類
     for (let i = 0; i < messages.length - 1; i++) {
         let msg = messages[i];
-        // 陣列最頂端的第一條 System 視為絕對靜態的角色設定
         if (i === 0 && msg.role === 'system') {
             staticTop.push(msg);
-        } 
-        // 任何被插在中間或底部的 System (通常是世界書、擴充套件注入) 都視為動態變數
-        else if (msg.role === 'system') {
+        } else if (msg.role === 'system') {
             volatile.push(msg);
-        } 
-        // 使用者與 AI 的對話歷史
-        else {
+            console.log(`[DS-Cache-Opt] 🔍 偵測到動態/世界書 System，深度 index: ${i}`);
+        } else {
             history.push(msg);
         }
     }
 
-    // 滑動視窗 (Sliding Window) 解決方案：超前丟棄與錨點追蹤
+    // 狀態錨點處理
     if (history.length > 0) {
         let anchorIndex = -1;
-        // 嘗試在歷史中尋找上一次鎖定的開頭
         if (cacheState.anchorContent) {
             anchorIndex = history.findIndex(m => m.content === cacheState.anchorContent);
         }
 
         if (anchorIndex !== -1) {
-            // 錨點還在：完美切割，保證前綴與上一輪 100% 相同
             history = history.slice(anchorIndex);
+            console.log(`[DS-Cache-Opt] 🎯 快取錨點命中！(在歷史記錄 index: ${anchorIndex})，完美切割保證前綴。`);
         } else {
-            // 錨點不見了 (上下文滿了 ST 砍掉了舊訊息)：一口氣超前丟棄 N 條
             let chunk = settings.chunkSize || 10;
             if (history.length > chunk + 2) {
                 history = history.slice(chunk);
                 cacheState.anchorContent = history[0].content;
-                console.log(`[DS-Cache-Opt] 歷史推進，已超前剔除 ${chunk} 條訊息以建立新的快取護城河`);
+                console.log(`[DS-Cache-Opt] 🚧 錨點丟失 (上下文推進)，超前剔除 ${chunk} 條，建立新錨點。`);
             } else {
                 cacheState.anchorContent = history[0].content;
+                console.log(`[DS-Cache-Opt] 🆕 歷史過短，直接建立首條為新錨點。`);
             }
         }
     }
 
-    // 終極重組：[絕對靜態的頂層] -> [靜止的歷史] -> [動態的世界書/作者備註] -> [最新一句話]
     let optimized = [...staticTop, ...history];
-    
     if (volatile.length > 0) {
         let combined = volatile.map(m => m.content).join("\n\n---\n\n");
         optimized.push({ role: 'system', content: combined });
+        console.log(`[DS-Cache-Opt] 📦 已將 ${volatile.length} 條動態 System 合併並置於最底部 (最新對話之上)。`);
     }
-    
     optimized.push(latestUser);
 
-    console.log(`[DS-Cache-Opt] Payload 重組完成 | 靜態區塊: ${staticTop.length + history.length} 條 | 動態後置區塊: ${volatile.length} 條`);
+    console.log(`[DS-Cache-Opt] ✅ 重組完成！新的陣列長度: ${optimized.length}`);
+    console.log(`--- [DS-Cache-Opt] 重組結束 ---\n`);
     return optimized;
 }
 
-/**
- * 底層劫持：攔截 ST 的網路請求
- * 這是保證 100% 生效的唯一解，完全無視 ST 內部的 prompt 複雜生命週期
- */
-const originalFetch = window.fetch;
-window.fetch = async function (...args) {
-    const url = args[0];
-    const options = args[1];
+// ==========================================
+// 4. 底層網路劫持 (Fetch Interceptor)
+// ==========================================
+function setupFetchHijack() {
+    console.log("[DS-Cache-Opt] 🛡️ [7/7] 注入 Fetch 底層攔截器...");
+    const originalFetch = window.fetch;
+    
+    window.fetch = async function (...args) {
+        const url = args[0] || "";
+        const options = args[1] || {};
 
-    // 判斷是否為送出給 LLM 的 POST 請求
-    if (options && options.method === 'POST' && typeof options.body === 'string') {
-        try {
+        // 僅攔截 POST 且有 body 的請求
+        if (options.method === 'POST' && typeof options.body === 'string') {
+            // 判斷是否為送給 LLM 的請求
             if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
-                let parsedBody = JSON.parse(options.body);
-                
-                let targetMessages = null;
-                let isWrapped = false; // 處理不同 API proxy 的格式
-                
-                if (parsedBody.messages && Array.isArray(parsedBody.messages)) {
-                    targetMessages = parsedBody.messages;
-                } else if (parsedBody.body && parsedBody.body.messages && Array.isArray(parsedBody.body.messages)) {
-                    targetMessages = parsedBody.body.messages;
-                    isWrapped = true;
-                }
-
-                if (targetMessages) {
-                    const optimizedMessages = optimizeMessages(targetMessages);
-                    // 寫回 Payload
-                    if (isWrapped) {
-                        parsedBody.body.messages = optimizedMessages;
-                    } else {
-                        parsedBody.messages = optimizedMessages;
+                console.log(`\n[DS-Cache-Opt] 🌐 攔截到 LLM 請求發出: ${url}`);
+                try {
+                    let parsedBody = JSON.parse(options.body);
+                    let targetMessages = null;
+                    let isWrapped = false;
+                    
+                    if (parsedBody.messages && Array.isArray(parsedBody.messages)) {
+                        targetMessages = parsedBody.messages;
+                    } else if (parsedBody.body && parsedBody.body.messages && Array.isArray(parsedBody.body.messages)) {
+                        targetMessages = parsedBody.body.messages;
+                        isWrapped = true;
                     }
-                    options.body = JSON.stringify(parsedBody);
+
+                    if (targetMessages) {
+                        const optimizedMessages = optimizeMessages(targetMessages);
+                        if (isWrapped) {
+                            parsedBody.body.messages = optimizedMessages;
+                        } else {
+                            parsedBody.messages = optimizedMessages;
+                        }
+                        options.body = JSON.stringify(parsedBody);
+                        console.log("[DS-Cache-Opt] 📤 Payload 已覆寫並準備送出。");
+                    } else {
+                        console.log("[DS-Cache-Opt] ⏩ 未在此請求中發現 messages 陣列，跳過。");
+                    }
+                } catch (e) {
+                    console.error("[DS-Cache-Opt] ❌ 底層攔截處理失敗:", e);
                 }
             }
-        } catch (e) {
-            console.error("[DS-Cache-Opt] 底層網路攔截處理失敗:", e);
         }
-    }
-    // 放行請求
-    return originalFetch.apply(this, args);
-};
+        return originalFetch.apply(this, args);
+    };
+    console.log("[DS-Cache-Opt] 🎉 初始化流程全部完成！外掛現正全面守護您的 DeepSeek 快取。");
+}
 
-/**
- * 內聯 UI 建立 (解決加載外部 HTML 失敗的問題)
- */
-const uiHTML = `
-<div class="deepseek-cache-container" style="padding:15px; background:rgba(20,20,20,0.5); border:1px solid var(--SmartThemeBorderColor); border-radius:8px; margin-bottom:10px;">
-    <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-            <b>DeepSeek 快取極限最佳化 V3</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content" style="padding-top:10px;">
-            <label class="checkbox_label">
-                <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
-                <span>啟用底層劫持快取錨點引擎 (Enable)</span>
-            </label>
-            
-            <hr style="border-color:rgba(255,255,255,0.1); margin:10px 0;">
-            <div>
-                <small><b>動態錨點緩衝設定 (Stateful Chunking)</b></small><br>
-                <label>超前丟棄訊息數:</label>
-                <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
-                <br><small style="color:#a8a8a8;">當對話達到長度上限 ST 刪除舊訊息時，一次性超前丟棄 N 條(預設10)，以確保接下來 N 輪的前綴陣列 100% 靜止。</small>
-            </div>
-
-            <hr style="border-color:rgba(255,255,255,0.1); margin:10px 0;">
-            <div style="color:#ff9d9d; font-size:0.85em; background:rgba(255,0,0,0.15); padding:10px; border-radius:5px;">
-                <b>🚨 為了 100% 命中，你「必須」在 ST 中做的事:</b>
-                <ul style="padding-left:20px; margin-top:5px; margin-bottom:0; line-height: 1.4;">
-                    <li><b>禁用時間變數:</b> Advanced Formatting 中的預設提示詞絕對不能有 <code>{{time}}</code> 等變動巨集，否則每分鐘第一句都在變，快取永不命中。</li>
-                    <li><b>世界書與作者備註設定:</b> 觸發的世界書請務必設定<b>「深度為 0」</b>，或勾選<b>「作為 System 插入」</b>。如果它被安插在深度 4 的「舊對話字串內部」，你的前綴快取將被徹底摧毀。</li>
-                </ul>
-            </div>
-        </div>
-    </div>
-</div>
-`;
-
-// 掛載 UI 與監聽器
-jQuery(async () => {
-    // 注入至擴充功能面板
-    $('#extensions_settings').append(uiHTML);
-
-    // 綁定事件
-    $('#ds_cache_enable').on('change', function() {
-        settings.enabled = !!$(this).prop('checked');
-        saveSettings();
-    });
-    $('#ds_chunk_size').on('input', function() {
-        settings.chunkSize = parseInt($(this).val()) || 10;
-        saveSettings();
-    });
+// 啟動入口
+$(document).ready(() => {
+    init();
 });
