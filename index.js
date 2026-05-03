@@ -5,7 +5,7 @@ console.log("==================================================");
 const EXTENSION_NAME = "deepseek-cache-optimizer";
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
-let ST_extension_settings = {}; // 全域設定參考
+let ST_extension_settings = null; // 全域設定參考
 
 // 核心快取狀態錨點
 let cacheState = {
@@ -14,35 +14,62 @@ let cacheState = {
 };
 
 // ==========================================
-// 1. 安全初始化模組 (防崩潰機制)
+// 1. 絕對安全初始化模組 (防崩潰保底機制)
 // ==========================================
 async function init() {
     console.log("[DS-Cache-Opt] ⏳ [2/7] 嘗試載入 SillyTavern 核心設定...");
-    try {
-        // 使用動態 Import，就算路徑錯了也不會導致整個腳本白屏崩潰
-        const stModule = await import('../../../../script.js');
-        ST_extension_settings = stModule.extension_settings;
-        console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 import 取得 ST 設定！");
-    } catch (err) {
-        console.warn("[DS-Cache-Opt] ⚠️ [3/7] Import 失敗，嘗試使用 window 全域變數...", err);
-        if (window.extension_settings) {
-            ST_extension_settings = window.extension_settings;
-            console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 window 取得 ST 設定！");
-        } else {
-            console.error("[DS-Cache-Opt] ❌ [3/7] 無法取得任何設定，外掛可能無法儲存狀態。");
+    
+    // 嘗試方法 A: ST 現代標準 API
+    if (typeof SillyTavern !== 'undefined' && typeof SillyTavern.getContext === 'function') {
+        let context = SillyTavern.getContext();
+        if (context && context.extension_settings) {
+            ST_extension_settings = context.extension_settings;
+            console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 SillyTavern.getContext() 取得設定！");
         }
+    }
+
+    // 嘗試方法 B: 傳統全域變數
+    if (!ST_extension_settings && typeof window.extension_settings !== 'undefined') {
+        ST_extension_settings = window.extension_settings;
+        console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 window.extension_settings 取得設定！");
+    }
+
+    // 嘗試方法 C: 終極保底 (如果 ST 改版把變數都藏起來了，就用暫存記憶體，保證不崩潰)
+    if (!ST_extension_settings) {
+        console.warn("[DS-Cache-Opt] ⚠️ [3/7] 無法找到 ST 的擴充設定變數，將使用暫存記憶體啟動 (重新整理後設定會還原預設)。");
+        ST_extension_settings = {}; // 給予空物件，阻止 undefined 崩潰
     }
 
     // 初始化設定值
     if (!ST_extension_settings[EXTENSION_NAME]) {
         ST_extension_settings[EXTENSION_NAME] = {};
     }
+    
+    // 安全地合併設定
     settings = Object.assign({}, defaultSettings, ST_extension_settings[EXTENSION_NAME]);
     console.log("[DS-Cache-Opt] ⚙️ [4/7] 當前設定檔讀取完畢:", settings);
 
     // 啟動 UI 與網路攔截
     injectUI();
     setupFetchHijack();
+}
+
+// 安全儲存設定
+function safeSaveSettings() {
+    if (ST_extension_settings) {
+        ST_extension_settings[EXTENSION_NAME] = settings;
+    }
+    
+    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+        let context = SillyTavern.getContext();
+        if (typeof context.saveSettingsDebounced === 'function') {
+            context.saveSettingsDebounced();
+            return;
+        }
+    }
+    if (typeof window.saveSettingsDebounced === 'function') {
+        window.saveSettingsDebounced();
+    }
 }
 
 // ==========================================
@@ -54,7 +81,7 @@ function injectUI() {
     <div id="ds_cache_ui_box" style="padding:15px; background:rgba(20,20,20,0.8); border:2px solid #00ff88; border-radius:8px; margin-bottom:10px;">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header" style="color:#00ff88;">
-                <b>🟢 DeepSeek 快取引擎 V4 (運行中)</b>
+                <b>🟢 DeepSeek 快取引擎 V4.1 (運行中)</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
@@ -73,7 +100,6 @@ function injectUI() {
     </div>
     `;
 
-    // 檢查 ST 的擴充設定面板是否已經出現
     if ($('#extensions_settings').length > 0) {
         if ($('#ds_cache_ui_box').length === 0) {
             $('#extensions_settings').append(uiHTML);
@@ -82,18 +108,18 @@ function injectUI() {
             // 綁定事件
             $('#ds_cache_enable').on('change', function() {
                 settings.enabled = !!$(this).prop('checked');
-                ST_extension_settings[EXTENSION_NAME] = settings;
+                safeSaveSettings();
                 console.log("[DS-Cache-Opt] 🔘 狀態切換: 啟用 =", settings.enabled);
             });
             $('#ds_chunk_size').on('input', function() {
                 settings.chunkSize = parseInt($(this).val()) || 10;
-                ST_extension_settings[EXTENSION_NAME] = settings;
+                safeSaveSettings();
                 console.log("[DS-Cache-Opt] 🔘 ChunkSize 更改為:", settings.chunkSize);
             });
         }
     } else {
         console.warn("[DS-Cache-Opt] ⚠️ [5/7] 找不到 #extensions_settings 面板，1秒後重試...");
-        setTimeout(injectUI, 1000); // 輪詢直到成功
+        setTimeout(injectUI, 1000);
     }
 }
 
@@ -104,12 +130,8 @@ function optimizeMessages(messages) {
     console.log(`\n--- [DS-Cache-Opt] 🧠 開始進行陣列重組 ---`);
     console.log(`[DS-Cache-Opt] 原始陣列長度: ${messages.length}`);
 
-    if (!settings.enabled) {
-        console.log("[DS-Cache-Opt] ⛔ 外掛已停用，不處理。");
-        return messages;
-    }
-    if (messages.length < 3) {
-        console.log("[DS-Cache-Opt] ⏭️ 陣列太短，跳過處理。");
+    if (!settings.enabled || messages.length < 3) {
+        console.log("[DS-Cache-Opt] ⏭️ 外掛停用或陣列過短，跳過處理。");
         return messages;
     }
 
@@ -130,7 +152,6 @@ function optimizeMessages(messages) {
         }
     }
 
-    // 狀態錨點處理
     if (history.length > 0) {
         let anchorIndex = -1;
         if (cacheState.anchorContent) {
@@ -139,7 +160,7 @@ function optimizeMessages(messages) {
 
         if (anchorIndex !== -1) {
             history = history.slice(anchorIndex);
-            console.log(`[DS-Cache-Opt] 🎯 快取錨點命中！(在歷史記錄 index: ${anchorIndex})，完美切割保證前綴。`);
+            console.log(`[DS-Cache-Opt] 🎯 快取錨點命中！(歷史 index: ${anchorIndex})，前綴完美靜止。`);
         } else {
             let chunk = settings.chunkSize || 10;
             if (history.length > chunk + 2) {
@@ -157,11 +178,11 @@ function optimizeMessages(messages) {
     if (volatile.length > 0) {
         let combined = volatile.map(m => m.content).join("\n\n---\n\n");
         optimized.push({ role: 'system', content: combined });
-        console.log(`[DS-Cache-Opt] 📦 已將 ${volatile.length} 條動態 System 合併並置於最底部 (最新對話之上)。`);
+        console.log(`[DS-Cache-Opt] 📦 已將 ${volatile.length} 條動態 System 合併並置於最底部。`);
     }
     optimized.push(latestUser);
 
-    console.log(`[DS-Cache-Opt] ✅ 重組完成！新的陣列長度: ${optimized.length}`);
+    console.log(`[DS-Cache-Opt] ✅ 重組完成！新陣列長度: ${optimized.length}`);
     console.log(`--- [DS-Cache-Opt] 重組結束 ---\n`);
     return optimized;
 }
@@ -177,9 +198,7 @@ function setupFetchHijack() {
         const url = args[0] || "";
         const options = args[1] || {};
 
-        // 僅攔截 POST 且有 body 的請求
         if (options.method === 'POST' && typeof options.body === 'string') {
-            // 判斷是否為送給 LLM 的請求
             if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
                 console.log(`\n[DS-Cache-Opt] 🌐 攔截到 LLM 請求發出: ${url}`);
                 try {
@@ -203,8 +222,6 @@ function setupFetchHijack() {
                         }
                         options.body = JSON.stringify(parsedBody);
                         console.log("[DS-Cache-Opt] 📤 Payload 已覆寫並準備送出。");
-                    } else {
-                        console.log("[DS-Cache-Opt] ⏩ 未在此請求中發現 messages 陣列，跳過。");
                     }
                 } catch (e) {
                     console.error("[DS-Cache-Opt] ❌ 底層攔截處理失敗:", e);
@@ -216,7 +233,7 @@ function setupFetchHijack() {
     console.log("[DS-Cache-Opt] 🎉 初始化流程全部完成！外掛現正全面守護您的 DeepSeek 快取。");
 }
 
-// 啟動入口
-$(document).ready(() => {
+// 延遲啟動以確保 DOM 和 ST 全域變數已準備好
+setTimeout(() => {
     init();
-});
+}, 500);
