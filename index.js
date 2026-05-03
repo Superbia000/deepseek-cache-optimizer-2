@@ -1,15 +1,14 @@
 console.log("==================================================");
-console.log("[DS-Cache-Opt] 🚀 [1/3] V7.0 官方原生架構啟動中...");
+console.log("[DS-Cache-Opt] 🚀 [1/3] V8.0 極致相容架構啟動中...");
 console.log("==================================================");
 
-// 使用 ST 官方標準的模組匯入方式
-import { getContext, eventSource } from '../../../../script.js';
-
+// 🚫 絕對禁止使用 import，避免不同 ST 版本的 SyntaxError 崩潰
 const EXTENSION_NAME = "deepseek-cache-optimizer";
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
+let ST_ext_settings_ref = null;
 
-// V7 核心狀態機
+// 核心狀態機
 let cacheState = {
     chatId: null,
     isInitialized: false,
@@ -18,19 +17,48 @@ let cacheState = {
 };
 
 // ==========================================
-// 1. 安全初始化設定
+// 1. 動態全域變數尋找與初始化
 // ==========================================
-const context = getContext();
-if (!context.extension_settings[EXTENSION_NAME]) {
-    context.extension_settings[EXTENSION_NAME] = { ...defaultSettings };
-}
-settings = context.extension_settings[EXTENSION_NAME];
-console.log("[DS-Cache-Opt] ⚙️ [2/3] 當前設定檔:", settings);
+function init() {
+    console.log("[DS-Cache-Opt] ⏳ 正在尋找 ST 全域變數...");
 
-function saveSettings() {
-    context.extension_settings[EXTENSION_NAME] = settings;
-    if (typeof context.saveSettingsDebounced === 'function') {
-        context.saveSettingsDebounced();
+    // 動態獲取 Context (相容各種 ST 版本)
+    const getCtx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext : (window.getContext || null);
+    const context = getCtx ? getCtx() : {};
+
+    // 尋找設定檔與事件源
+    let extSettings = context.extension_settings || window.extension_settings;
+    let evSource = context.eventSource || window.eventSource;
+
+    // 如果 ST 還沒載入完畢，延遲 0.5 秒後重試
+    if (!extSettings || !evSource || typeof evSource.on !== 'function') {
+        setTimeout(init, 500);
+        return;
+    }
+
+    ST_ext_settings_ref = extSettings;
+    
+    // 初始化設定
+    if (!ST_ext_settings_ref[EXTENSION_NAME]) {
+        ST_ext_settings_ref[EXTENSION_NAME] = { ...defaultSettings };
+    }
+    settings = Object.assign({}, defaultSettings, ST_ext_settings_ref[EXTENSION_NAME]);
+    if (settings.enabled !== false) settings.enabled = true;
+
+    console.log("[DS-Cache-Opt] ⚙️ [2/3] 當前設定檔:", settings);
+
+    // 啟動功能
+    injectUI();
+    registerHook(evSource);
+}
+
+function safeSaveSettings() {
+    if (ST_ext_settings_ref) ST_ext_settings_ref[EXTENSION_NAME] = settings;
+    const getCtx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext : (window.getContext || null);
+    if (getCtx && typeof getCtx().saveSettingsDebounced === 'function') {
+        getCtx().saveSettingsDebounced();
+    } else if (typeof window.saveSettingsDebounced === 'function') {
+        window.saveSettingsDebounced();
     }
 }
 
@@ -63,7 +91,7 @@ function injectUI() {
     <div id="ds_cache_ui_box" class="extension_settings_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>DeepSeek 原生快取架構 V7</b>
+                <b>DeepSeek 原生快取架構 V8.0</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
@@ -91,11 +119,11 @@ function injectUI() {
             $('#ds_cache_enable').on('change', function() {
                 settings.enabled = !!$(this).prop('checked');
                 if (settings.enabled) cacheState.isInitialized = false; 
-                saveSettings();
+                safeSaveSettings();
             });
             $('#ds_chunk_size').on('input', function() {
                 settings.chunkSize = parseInt($(this).val()) || 10;
-                saveSettings();
+                safeSaveSettings();
             });
             $('#ds_reset_btn').on('click', function() {
                 cacheState.isInitialized = false;
@@ -118,7 +146,7 @@ function optimizeMessages(messages) {
     let sysTop = [];
     let historyAll = [];
     let sysBottom = [];
-    let latestMsg = messages[messages.length - 1]; // 最後一條不動
+    let latestMsg = messages[messages.length - 1]; 
 
     let foundFirstUser = false;
     for (let i = 0; i < messages.length - 1; i++) {
@@ -191,20 +219,14 @@ function optimizeMessages(messages) {
 // ==========================================
 // 4. 註冊 ST 原生 API 攔截事件
 // ==========================================
-if (eventSource) {
-    eventSource.on('before_api_request', (requestData) => {
-        // requestData 即為將要送給 API (及 View Last Prompt) 的原始物件
+function registerHook(evSource) {
+    evSource.on('before_api_request', (requestData) => {
         if (settings.enabled && requestData && Array.isArray(requestData.messages)) {
-            // 直接覆寫陣列，保證 UI 顯示與實際發送的內容 100% 同步
             requestData.messages = optimizeMessages(requestData.messages);
         }
     });
-    console.log("[DS-Cache-Opt] 🎉 [3/3] 原生事件攔截註冊成功！系統運作中。");
-} else {
-    console.error("[DS-Cache-Opt] ❌ 找不到 eventSource，外掛無法註冊事件。");
+    console.log("[DS-Cache-Opt] 🎉 [3/3] 原生事件攔截註冊成功！系統完美運作中。");
 }
 
-// 啟動 UI 注入
-$(document).ready(() => {
-    injectUI();
-});
+// 延遲啟動以確保 ST 環境已準備完畢
+setTimeout(init, 500);
