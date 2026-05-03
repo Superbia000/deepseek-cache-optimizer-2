@@ -1,8 +1,10 @@
 {
-    "display_name": "DeepSeek Cache Optimizer Pro",
-    "loading_order": 10,
-    "js": "index.js",
+    "name": "DeepSeek-Cache-Optimizer",
+    "display_name": "DeepSeek 官方快取引擎 V13",
+    "description": "透過 ST 官方 Interceptor 機制重組上下文，確保 DeepSeek 磁碟快取極限命中率。",
+    "version": "13.0.0",
     "author": "AI Architect",
-    "version": "9.0",
-    "description": "具備狀態錨點追蹤與強制尾部重組技術，完美適應各種世界書、深度與預設，確保 DeepSeek V4 Pro 前綴快取命中率達 99%。"
+    "main": "index.js",
+    "generate_interceptor": "dsCacheInterceptor",
+    "loading_order": 999
 }
