@@ -1,11 +1,8 @@
 {
     "display_name": "Deepseek Cache Optimizer",
-    "loading_order": 999,
     "js": "index.js",
     "author": "AI Assistant",
-    "version": "1.1.0",
-    "homePage": "https://docs.sillytavern.app",
-    "description": "專為 Deepseek V4 Pro 設計的前綴緩存(Prefix Cache)最佳化工具。利用官方原生 Interceptor API 與絕對錨點截斷對齊，達到接近 100% 的快取命中率。",
-    "auto_update": false,
-    "generate_interceptor": "DeepseekOptimizer_interceptGeneration"
+    "version": "3.0.0",
+    "description": "Deepseek V3/V4 快取極致優化。採用底層 Stringify 與 Fetch 雙重攔截，完美同步 ST 的 UI 提示詞與實際網路封包，達 100% 命中率。",
+    "auto_update": true
 }
